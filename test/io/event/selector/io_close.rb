@@ -6,10 +6,11 @@
 require "io/event"
 require "io/event/selector"
 require "io/event/debug/selector"
+require "socket"
 
 # Ruby invokes the `io_close` fiber-scheduler hook with a raw integer file descriptor (Ruby 4.0+, see `rb_fiber_scheduler_io_close` in CRuby). Verify each selector that opts into the hook handles that contract.
 IOClose = Sus::Shared("io_close") do
-	it "can close a raw file descriptor" do
+	it "can close a raw file descriptor, or leave it for Ruby to close" do
 		selector = subject.new(Fiber.current)
 		
 		input, output = IO.pipe
@@ -19,7 +20,10 @@ IOClose = Sus::Shared("io_close") do
 		descriptor = input.fileno
 		
 		begin
-			expect(selector.io_close(descriptor)).to be_truthy
+			unless selector.io_close(descriptor)
+				# The selector left the descriptor open for Ruby to close:
+				expect{IO.for_fd(descriptor, autoclose: true).close}.not.to raise_exception
+			end
 		ensure
 			input.close rescue nil
 			output.close rescue nil
@@ -48,3 +52,28 @@ IO::Event::Selector.constants.each do |name|
 		it_behaves_like IOClose
 	end
 end
+
+describe IO::Event::Selector::EPoll do
+	it "stops reporting a descriptor that was closed while a duplicate keeps its file open" do
+		selector = subject.new(Fiber.current)
+		local, remote = UNIXSocket.pair
+		duplicate = nil
+		
+		Fiber.new do
+			selector.io_wait(Fiber.current, local, IO::READABLE)
+			duplicate = local.dup
+			expect(selector.io_close(local.fileno)).to be == false
+			local.close
+		end.transfer
+		
+		remote.puts "Hello World"
+		
+		expect(selector.select(1)).to be == 1
+		expect(selector.select(0)).to be == 0
+	ensure
+		duplicate&.close
+		local&.close
+		remote&.close
+		selector&.close
+	end
+end if defined?(IO::Event::Selector::EPoll)

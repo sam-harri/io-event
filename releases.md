@@ -1,5 +1,9 @@
 # Releases
 
+## Unreleased
+
+  - Add `io_close` to the `EPoll` selector. It removes the registration of a descriptor before Ruby closes it. Previously, a descriptor that was closed before its fiber yielded back to the event loop, while a duplicate kept the file open, left a registration that could not be removed and made every `select` return immediately.
+
 ## v1.22.3
 
   - Sign releases with the shared Socketry certificate.

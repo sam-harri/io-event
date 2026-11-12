@@ -1070,6 +1070,33 @@ VALUE select_handle_events_ensure(VALUE _arguments)
 	return Qnil;
 }
 
+// The registration belongs to the open file description, so it must be removed while the descriptor still refers to it. After the descriptor is closed, a duplicate keeps the registration alive and it can no longer be removed.
+VALUE IO_Event_Selector_EPoll_io_close(VALUE self, VALUE _descriptor) {
+	struct IO_Event_Selector_EPoll *selector = NULL;
+	TypedData_Get_Struct(self, struct IO_Event_Selector_EPoll, &IO_Event_Selector_EPoll_Type, selector);
+	
+	int descriptor = RB_NUM2INT(_descriptor);
+	
+	if (descriptor >= 0 && (size_t)descriptor < selector->descriptors.limit) {
+		struct IO_Event_Selector_EPoll_Descriptor *epoll_descriptor = selector->descriptors.base[descriptor];
+		
+		if (epoll_descriptor && epoll_descriptor->registered_events) {
+			int result = epoll_ctl(selector->descriptor, EPOLL_CTL_DEL, descriptor, NULL);
+			
+			if (result == 0 || errno == ENOENT) {
+				epoll_descriptor->registered_events = 0;
+				
+				if (IO_Event_List_empty(&epoll_descriptor->list)) {
+					RB_OBJ_WRITE(selector->backend.self, &epoll_descriptor->io, 0);
+				}
+			}
+		}
+	}
+	
+	// Ruby closes the descriptor:
+	return Qfalse;
+}
+
 // TODO This function is not re-entrant and we should document and assert as such.
 VALUE IO_Event_Selector_EPoll_select(VALUE self, VALUE duration) {
 	struct IO_Event_Selector_EPoll *selector = NULL;
@@ -1191,4 +1218,6 @@ void Init_IO_Event_Selector_EPoll(VALUE IO_Event_Selector) {
 #endif
 	
 	rb_define_method(IO_Event_Selector_EPoll, "process_wait", IO_Event_Selector_EPoll_process_wait, 3);
+	
+	rb_define_method(IO_Event_Selector_EPoll, "io_close", IO_Event_Selector_EPoll_io_close, 1);
 }
